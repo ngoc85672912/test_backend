@@ -1,7 +1,7 @@
-print("Khởi tạo API License Serverless (Full Routes, Fix Entropy)!")
+print("Khởi tạo API License Serverless (Fix Triệt Để Lỗi Entropy)!")
 from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from passlib.context import CryptContext
+# ⛔️ TUYỆT ĐỐI KHÔNG IMPORT PASSLIB Ở ĐÂY
 from pydantic import BaseModel
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -18,12 +18,14 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
-# FIX: Di chuyển việc khởi tạo CryptContext vào BÊN TRONG các hàm để không bị lỗi Entropy
+# FIX 1: Import passlib BÊN TRONG các hàm cần dùng
 def get_password_hash(password):
+    from passlib.context import CryptContext
     pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
     return pwd_context.hash(password)
 
 def verify_password(plain_password, hashed_password):
+    from passlib.context import CryptContext
     pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
     return pwd_context.verify(plain_password, hashed_password)
 
@@ -44,7 +46,8 @@ fake_users_db = {
         "id": 1,
         "username": "admin",
         "email": "khanhngoc981856729@gmail.com",
-        "hashed_password": get_password_hash("admin123")
+        # FIX 2: Dán thẳng chuỗi hash đã tạo sẵn để không phải gọi passlib khi khởi động
+        "hashed_password": "$pbkdf2-sha256$29000$gSjz517Y.o6s955AnUaAnQ$oE0gGZ4Xk8p7g/2JtysB7e6a7UOMdCFx3N9go2D7d5E" # Đây là hash của "admin123"
     }
 }
 fake_licenses_db = {}
@@ -52,7 +55,7 @@ user_id_counter = 2
 license_id_counter = 1
 
 # ==========================================
-# 3. PYDANTIC SCHEMAS
+# 3. PYDANTIC SCHEMAS (Không thay đổi)
 # ==========================================
 class Token(BaseModel):
     access_token: str
@@ -100,7 +103,7 @@ class VerifyResponse(BaseModel):
 app = FastAPI(
     title="License Management API (Serverless)",
     description="Hệ thống quản lý License Key trên Cloudflare Workers",
-    version="1.2.2" # Nâng version
+    version="2.0.0" # Nâng version, đánh dấu đã fix
 )
 
 def get_current_user(token: str = Depends(oauth2_scheme)):
