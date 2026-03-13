@@ -9,7 +9,7 @@ from workers import WorkerEntrypoint
 app = FastAPI()
 
 # -------------------------------------------------------------
-# 1. ĐỊNH NGHĨA SCHEMAS (Khớp với Interface của Node.js)
+# 1. ĐỊNH NGHĨA SCHEMAS (Pydantic Models)
 # -------------------------------------------------------------
 class HardwareFingerprint(BaseModel):
     os_platform: str
@@ -22,24 +22,42 @@ class VerifyRequest(BaseModel):
     fingerprint: HardwareFingerprint
 
 # -------------------------------------------------------------
-# 2. HÀM HỖ TRỢ SUPABASE
+# 2. HÀM HỖ TRỢ SUPABASE (ĐÃ TỐI ƯU)
 # -------------------------------------------------------------
+
 def get_supabase_config(req: Request) -> dict:
-    env = req.scope["env"]
-    url: str = getattr(env, "SUPABASE_URL", "https://jijddxsdzwfddzvimmbw.supabase.co")
-    key: str = getattr(env, "SUPABASE_KEY", "sb_publishable_PaYFgO7F3hyee7iMI7YZ_g_bwqN3SUg")
-    return {"url": url, "key": key}
+    """
+    Lấy cấu hình Supabase từ biến môi trường của Cloudflare Worker.
+    Ném ra lỗi 500 nếu các biến môi trường quan trọng không được thiết lập.
+    """
+    try:
+        # req.scope["env"] là cách FastAPI truy cập vào môi trường của Cloudflare
+        env = req.scope["env"]
+        url = env.SUPABASE_URL
+        key = env.SUPABASE_KEY
+        
+        if not url or not key:
+             raise AttributeError("Giá trị của biến môi trường không được để trống.")
+
+        return {"url": url, "key": key}
+    except AttributeError as e:
+        # Lỗi này xảy ra khi SUPABASE_URL/SUPABASE_KEY không được định nghĩa trong file .json hoặc trong "secrets"
+        print(f"Lỗi cấu hình: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail="Lỗi cấu hình phía máy chủ: Thiếu biến môi trường SUPABASE_URL hoặc SUPABASE_KEY."
+        )
 
 def get_supabase_headers(api_key: str) -> dict:
+    """Tạo headers chuẩn để gọi Supabase API."""
     return {
         "apikey": api_key,
         "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "Prefer": "return=representation"
+        "Content-Type": "application/json"
     }
 
 # -------------------------------------------------------------
-# 3. API ENDPOINT KIỂM TRA BẢN QUYỀN
+# 3. API ENDPOINT CHÍNH
 # -------------------------------------------------------------
 @app.post("/verify/")
 async def verify_license(payload: VerifyRequest, req: Request):
@@ -55,67 +73,61 @@ async def verify_license(payload: VerifyRequest, req: Request):
         res = await client.get(api_url, headers=headers)
 
     if res.status_code != 200:
-        raise HTTPException(status_code=500, detail="Lỗi kết nối máy chủ dữ liệu.")
+        # Có thể do API Key sai hoặc Supabase bị lỗi
+        raise HTTPException(status_code=res.status_code, detail="Lỗi kết nối máy chủ dữ liệu.")
     
     data = res.json()
     
-    if not data or len(data) == 0:
+    if not data:
         raise HTTPException(status_code=404, detail="Mã bản quyền không tồn tại.")
         
     license_info = data[0]
 
-    # Bước 2: Kiểm tra trạng thái khóa/kích hoạt
+    # Bước 2: Kiểm tra trạng thái kích hoạt
     if not license_info.get("is_active"):
         raise HTTPException(status_code=403, detail="Mã bản quyền đã bị vô hiệu hóa.")
 
-    # Bước 3: Tính toán thời gian hết hạn (nếu có cột expires_at trong CSDL)
+    # Bước 3: Kiểm tra và tính toán thời gian hết hạn
     expires_at_str = license_info.get("expires_at")
-    days_remaining = 3650 # Mặc định là số lớn nếu dùng vĩnh viễn (không có expires_at)
+    days_remaining = 36500 # Mặc định là số rất lớn (coi như vĩnh viễn)
     
     if expires_at_str:
         try:
-            # Supabase trả về ISO 8601, ví dụ: "2026-12-31T23:59:59+00:00" hoặc "...Z"
-            clean_date_str = expires_at_str.replace("Z", "+00:00")
-            expires_dt = datetime.fromisoformat(clean_date_str)
+            # Chuyển đổi chuỗi ISO 8601 từ Supabase thành đối tượng datetime
+            expires_dt = datetime.fromisoformat(expires_at_str.replace("Z", "+00:00"))
             now_dt = datetime.now(timezone.utc)
-            delta = expires_dt - now_dt
-            days_remaining = delta.days
             
-            if days_remaining < 0:
+            if now_dt > expires_dt:
                 raise HTTPException(status_code=403, detail="Mã bản quyền của bạn đã hết hạn.")
-        except Exception as e:
-            print("Date parse error:", e)
+            
+            days_remaining = (expires_dt - now_dt).days
+        except (ValueError, TypeError):
+            # Xử lý trường hợp định dạng ngày tháng trong CSDL bị sai
+            raise HTTPException(status_code=500, detail="Lỗi dữ liệu ngày hết hạn trên máy chủ.")
 
-    # Bước 4: Kiểm tra Hardware Fingerprint (Khóa MAC Address)
+    # Bước 4: Kiểm tra và gán (Bind) Hardware Fingerprint
     db_mac = license_info.get("mac_address")
     client_mac = payload.fingerprint.mac_address
 
     if not db_mac:
-        # Cơ chế Bind (Chốt cứng máy): Nếu db_mac đang rỗng (lần đầu sử dụng), ghi MAC mới vào CSDL
+        # Nếu chưa có MAC trong CSDL -> Gán MAC của máy này vào key (kích hoạt lần đầu)
         update_url = f"{config['url']}/rest/v1/licenses?key=eq.{safe_key}"
         update_payload = {
             "mac_address": client_mac,
-            "hostname": payload.fingerprint.hostname, # Lưu thêm tên máy (tuỳ chọn nếu DB có cột hostname)
-            "os_platform": payload.fingerprint.os_platform # Tuỳ chọn
+            "hostname": payload.fingerprint.hostname,
+            "os_platform": payload.fingerprint.os_platform
         }
         
         async with httpx.AsyncClient() as client:
-            # Dùng PATCH để update dòng hiện tại
-            patch_headers = headers.copy()
-            patch_headers["Prefer"] = "return=minimal" # Không cần trả về dữ liệu sau khi update
-            update_res = await client.patch(update_url, headers=patch_headers, json=update_payload)
+            update_res = await client.patch(update_url, headers=headers, json=update_payload)
             
             if update_res.status_code not in (200, 204):
                 raise HTTPException(status_code=500, detail="Lỗi hệ thống khi đăng ký thiết bị.")
-    else:
-        # Nếu đã có db_mac, so sánh xem có khớp với thiết bị hiện tại không
-        if db_mac != client_mac:
-            raise HTTPException(
-                status_code=403, 
-                detail="Mã bản quyền này đang được sử dụng ở một máy tính khác!"
-            )
+    elif db_mac != client_mac:
+        # Nếu MAC trong CSDL đã tồn tại và không khớp -> Từ chối
+        raise HTTPException(status_code=403, detail="Mã bản quyền này đang được sử dụng ở một máy tính khác!")
 
-    # Bước 5: Trả kết quả thành công đúng interface VerifyResponse
+    # Bước 5: Trả về kết quả thành công
     return {
         "is_valid": True,
         "message": "Xác thực bản quyền thành công!",
@@ -125,7 +137,7 @@ async def verify_license(payload: VerifyRequest, req: Request):
 
 @app.get("/")
 async def root():
-    return {"message": "FastAPI + Supabase REST API License System is Running."}
+    return {"message": "License Verification System is Active."}
 
 # -------------------------------------------------------------
 # 4. CLOUDFLARE WORKERS ENTRYPOINT
@@ -133,5 +145,4 @@ async def root():
 class Default(WorkerEntrypoint):
     async def fetch(self, request):
         import asgi
-        # Đảm bảo app có thể truy cập env thông qua scope
         return await asgi.fetch(app, request.js_object, self.env)
