@@ -10,7 +10,6 @@ dependencies = [
     "markupsafe",
     "markupsafe",
     "jinja2",
-	"sqlalchemy<2.0.0",
 	"pydantic<2.12.0",
 	"libpass",
 	"typing",
