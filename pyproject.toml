@@ -10,7 +10,7 @@ dependencies = [
     "markupsafe",
     "markupsafe",
     "jinja2",
-	"pydantic<2.12.0",
+	"pydantic<2.0.0",
 	"libpass",
 	"typing",
 	"jwt"
