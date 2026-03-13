@@ -14,7 +14,7 @@ app = FastAPI()
 def get_supabase(req: Request) -> Client:
     env = req.scope["env"]
     url: str = "https://supabase.com"
-    key: str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImppamRkeHNkendmZGR6dmltbWJ3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMzODk2ODcsImV4cCI6MjA4ODk2NTY4N30.2gcIJR8ydesxOIr5xXLO3mfc8d8k4DuPlDrBF3R89SM"
+    key: str = "zxzx"
     return create_client(url, key)
 
 # Hàm kiểm tra License Key
