@@ -7,6 +7,11 @@
 		"python_workers",
 		"python_dedicated_snapshot"
 	],
+"vars": {
+		"SUPABASE_URL": "https://<ĐIỀN_PROJECT_ID_CỦA_BẠN>.supabase.co",
+		"SUPABASE_KEY": "<ĐIỀN_API_KEY_CỦA_BẠN_VÀO_ĐÂY>",
+		"MESSAGE": "Hệ thống cấp phép bản quyền đang hoạt động!"
+	},
 	"observability": {
 		"enabled": true
 	}
