@@ -98,7 +98,7 @@ fake_users_db = {
         "id": 1,
         "username": "admin",
         "email": "khanhngoc981856729@gmail.com",
-        "hashed_password": get_password_hash("admin123")
+        "hashed_password": get_password_hash("khanhngoc981856729@gmail.com")
     }
 }
 fake_licenses_db = {}
