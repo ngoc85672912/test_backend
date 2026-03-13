@@ -13,8 +13,8 @@ app = FastAPI()
 # Hàm hỗ trợ khởi tạo Supabase client từ environment
 def get_supabase(req: Request) -> Client:
     env = req.scope["env"]
-    url: str = env.SUPABASE_URL
-    key: str = env.SUPABASE_SERVICE_ROLE_KEY # Hoặc Anon Key tùy cấu hình RLS
+    url: str = "https://supabase.com"
+    key: str = "sbp_f3c86b9901ee21b25dcf5b24580a2616f713e450"
     return create_client(url, key)
 
 # Hàm kiểm tra License Key
