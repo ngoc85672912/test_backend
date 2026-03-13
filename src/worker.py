@@ -1,16 +1,19 @@
-print("Khởi tạo API License Serverless (Fix Triệt Để Lỗi Entropy)!")
-from fastapi import FastAPI, Depends, HTTPException, status, Request
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-# ⛔️ TUYỆT ĐỐI KHÔNG IMPORT PASSLIB Ở ĐÂY
-from pydantic import BaseModel
+print("Khởi tạo API Serverless v3 (Pure Python Crypto)!")
+import hashlib
+import hmac
+import base64
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 import uuid
-import jwt
+
+from fastapi import FastAPI, Depends, HTTPException, status, Request
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from pydantic import BaseModel
 from workers import WorkerEntrypoint
 
 # ==========================================
-# 1. CẤU HÌNH BẢO MẬT & JWT 
+# 1. TỰ VIẾT LẠI CÁC HÀM BẢO MẬT (THUẦN PYTHON)
 # ==========================================
 SECRET_KEY = "856729ngoc199819981998"
 ALGORITHM = "HS256"
@@ -18,36 +21,84 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
-# FIX 1: Import passlib BÊN TRONG các hàm cần dùng
-def get_password_hash(password):
-    from passlib.context import CryptContext
-    pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
-    return pwd_context.hash(password)
+# --- Thay thế Passlib bằng hashlib chuẩn ---
+def get_password_hash(password: str) -> str:
+    salt = uuid.uuid4().hex
+    hashed_password = hashlib.sha256(salt.encode() + password.encode()).hexdigest()
+    return f"{salt}${hashed_password}"
 
-def verify_password(plain_password, hashed_password):
-    from passlib.context import CryptContext
-    pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
-    return pwd_context.verify(plain_password, hashed_password)
+def verify_password(plain_password: str, hashed_password_with_salt: str) -> bool:
+    try:
+        salt, hashed_password = hashed_password_with_salt.split('$')
+        return hmac.compare_digest(
+            hashed_password,
+            hashlib.sha256(salt.encode() + plain_password.encode()).hexdigest()
+        )
+    except (ValueError, AttributeError):
+        return False
 
-def create_access_token(data: dict, expires_delta: timedelta | None = None):
+# --- Thay thế PyJWT bằng code JWT chuẩn ---
+def base64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b'=').decode('utf-8')
+
+def base64url_decode(data: str) -> bytes:
+    padding = b'=' * (4 - (len(data) % 4))
+    return base64.urlsafe_b64decode(data.encode('utf-8') + padding)
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.now(timezone.utc) + timedelta(minutes=15)
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+        expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire.timestamp()})
+    
+    header = json.dumps({"alg": ALGORITHM, "typ": "JWT"}, separators=(",", ":")).encode('utf-8')
+    payload = json.dumps(to_encode, separators=(",", ":")).encode('utf-8')
+    
+    encoded_header = base64url_encode(header)
+    encoded_payload = base64url_encode(payload)
+    
+    signing_input = f"{encoded_header}.{encoded_payload}".encode('utf-8')
+    signature = hmac.new(SECRET_KEY.encode('utf-8'), signing_input, hashlib.sha256).digest()
+    
+    encoded_signature = base64url_encode(signature)
+    
+    return f"{encoded_header}.{encoded_payload}.{encoded_signature}"
+
+def decode_and_verify_token(token: str) -> dict:
+    try:
+        encoded_header, encoded_payload, encoded_signature = token.split('.')
+        signing_input = f"{encoded_header}.{encoded_payload}".encode('utf-8')
+        
+        expected_signature = hmac.new(SECRET_KEY.encode('utf-8'), signing_input, hashlib.sha256).digest()
+        decoded_signature = base64url_decode(encoded_signature)
+        
+        if not hmac.compare_digest(expected_signature, decoded_signature):
+            raise ValueError("Invalid signature")
+            
+        payload = json.loads(base64url_decode(encoded_payload))
+        
+        if payload['exp'] < datetime.now(timezone.utc).timestamp():
+            raise ValueError("Token has expired")
+            
+        return payload
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 # ==========================================
-# 2. IN-MEMORY DATABASE (RAM TẠM THỜI ĐỂ TEST)
+# 2. IN-MEMORY DATABASE
 # ==========================================
 fake_users_db = {
     "admin": {
         "id": 1,
         "username": "admin",
         "email": "khanhngoc981856729@gmail.com",
-        # FIX 2: Dán thẳng chuỗi hash đã tạo sẵn để không phải gọi passlib khi khởi động
-        "hashed_password": "$pbkdf2-sha256$29000$gSjz517Y.o6s955AnUaAnQ$oE0gGZ4Xk8p7g/2JtysB7e6a7UOMdCFx3N9go2D7d5E" # Đây là hash của "admin123"
+        "hashed_password": get_password_hash("admin123")
     }
 }
 fake_licenses_db = {}
@@ -55,12 +106,12 @@ user_id_counter = 2
 license_id_counter = 1
 
 # ==========================================
-# 3. PYDANTIC SCHEMAS (Không thay đổi)
+# 3. PYDANTIC SCHEMAS
 # ==========================================
 class Token(BaseModel):
     access_token: str
     token_type: str
-
+# ... (Các class Pydantic khác giữ nguyên) ...
 class UserCreate(BaseModel):
     username: str
     email: str
@@ -101,29 +152,24 @@ class VerifyResponse(BaseModel):
 # 4. DEPENDENCIES & APP
 # ==========================================
 app = FastAPI(
-    title="License Management API (Serverless)",
+    title="License Management API (Pure Python)",
     description="Hệ thống quản lý License Key trên Cloudflare Workers",
-    version="2.0.0" # Nâng version, đánh dấu đã fix
+    version="3.0.0"
 )
 
 def get_current_user(token: str = Depends(oauth2_scheme)):
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Không thể xác thực danh tính",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None or username not in fake_users_db:
-            raise credentials_exception
-    except jwt.InvalidTokenError:
-        raise credentials_exception
-        
+    payload = decode_and_verify_token(token)
+    username: Optional[str] = payload.get("sub")
+    if username is None or username not in fake_users_db:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     return fake_users_db[username]
     
 # ==========================================
-# 5. PUBLIC ROUTES
+# 5. CÁC ROUTE API (Giữ nguyên logic)
 # ==========================================
 @app.post("/register", response_model=UserResponse, tags=["Public - Auth"])
 def register_user(user: UserCreate):
@@ -151,9 +197,10 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
     if not user or not verify_password(form_data.password, user["hashed_password"]):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sai thông tin đăng nhập")
     
-    access_token = create_access_token(data={"sub": user["username"]}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    access_token = create_access_token(data={"sub": user["username"]})
     return {"access_token": access_token, "token_type": "bearer"}
 
+# ... (Tất cả các route còn lại không cần thay đổi logic) ...
 @app.post("/verify/", response_model=VerifyResponse, tags=["Public - Verify Key"])
 def verify_license(request: VerifyRequest):
     license_data = None
@@ -183,10 +230,6 @@ def verify_license(request: VerifyRequest):
         
     return VerifyResponse(is_valid=True, message="License key hợp lệ.", days_remaining=days_remaining, expires_at=expires_at)
 
-
-# ==========================================
-# 6. PRIVATE ROUTES - USER MANAGEMENT
-# ==========================================
 @app.get("/users/me", response_model=UserResponse, tags=["Private - Users"])
 def read_users_me(current_user: dict = Depends(get_current_user)):
     return current_user
@@ -245,9 +288,6 @@ def delete_user(user_id: int, current_user: dict = Depends(get_current_user)):
         
     return {"status": "success", "message": "Đã xóa User và toàn bộ License liên quan."}
 
-# ==========================================
-# 7. PRIVATE ROUTES - LICESES MANAGEMENT
-# ==========================================
 @app.post("/licenses/", response_model=LicenseResponse, tags=["Private - Licenses"])
 def create_license(lic: LicenseCreate, current_user: dict = Depends(get_current_user)):
     global license_id_counter
@@ -283,7 +323,7 @@ def reset_fingerprint(license_id: int, current_user: dict = Depends(get_current_
     fake_licenses_db[license_id]["fingerprint"] = None
     key = fake_licenses_db[license_id]["license_key"]
     return {"status": "success", "message": f"Đã gỡ khóa thiết bị cho mã {key}."}
-
+    
 # ==========================================
 # CLOUDFLARE ENTRYPOINT
 # ==========================================
