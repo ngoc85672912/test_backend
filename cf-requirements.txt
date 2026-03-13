@@ -1,7 +1,0 @@
-webtypy
-fastapi
-markupsafe
-sqlalchemy
-pydantic
-libpass
-jwt
