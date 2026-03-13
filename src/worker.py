@@ -1,26 +1,22 @@
-
-print("Hoàn tất quá trình cài đặt!")
-from fastapi import FastAPI, Request
-from workers import WorkerEntrypoint
-import uuid
-import jwt
-from datetime import datetime, timedelta, timezone
-from typing import Optional
-from fastapi import FastAPI, Depends, HTTPException, status
+print("Khởi tạo API License Serverless (Full Routes)!")
+from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from passlib.context import CryptContext
 from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, JSON
-from sqlalchemy.orm import declarative_base, sessionmaker, Session, relationship
-from sqlalchemy import text
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+import uuid
+import jwt
+from workers import WorkerEntrypoint
 
 # ==========================================
-# 1. CẤU HÌNH BẢO MẬT & JWT (JSON Web Token)
+# 1. CẤU HÌNH BẢO MẬT & JWT 
 # ==========================================
 SECRET_KEY = "856729ngoc199819981998"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
+# DÙNG pbkdf2_sha256 để không bị lỗi trên Cloudflare
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
@@ -40,65 +36,22 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None):
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 # ==========================================
-# 2. CẤU HÌNH DATABASE & MODELS
+# 2. IN-MEMORY DATABASE (RAM TẠM THỜI ĐỂ TEST)
 # ==========================================
-SQLALCHEMY_DATABASE_URL = "sqlite:////tmp/license_system.db"
-engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+fake_users_db = {
+    "admin": {
+        "id": 1,
+        "username": "admin",
+        "email": "khanhngoc981856729@gmail.com",
+        "hashed_password": get_password_hash("khanhngoc981856729@gmail.com19981998")
+    }
+}
+fake_licenses_db = {}
+user_id_counter = 2
+license_id_counter = 1
 
-class UserDB(Base):
-    __tablename__ = "users"
-    id = Column(Integer, primary_key=True, index=True)
-    username = Column(String, unique=True, index=True, nullable=False)
-    email = Column(String, unique=True, index=True, nullable=False)
-    hashed_password = Column(String, nullable=False)
-    
-    licenses = relationship("LicenseDB", back_populates="owner", cascade="all, delete-orphan")
-
-class LicenseDB(Base):
-    __tablename__ = "licenses"
-    id = Column(Integer, primary_key=True, index=True)
-    license_key = Column(String, unique=True, index=True, nullable=False)
-    expires_at = Column(DateTime, nullable=False)
-    is_active = Column(Boolean, default=True)
-    # THÊM CỘT FINGERPRINT (LƯU DỮ LIỆU JSON)
-    fingerprint = Column(JSON, nullable=True) 
-    
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
-    owner = relationship("UserDB", back_populates="licenses")
-
-Base.metadata.create_all(bind=engine)
 # ==========================================
-# KHỞI TẠO TÀI KHOẢN ADMIN MẶC ĐỊNH
-# ==========================================
-def init_default_admin():
-    db = SessionLocal()
-    try:
-        # Kiểm tra xem tài khoản admin đã tồn tại chưa
-        admin_user = db.query(UserDB).filter(UserDB.username == "admin").first()
-        if not admin_user:
-            # Nếu chưa có thì tạo mới
-            hashed_pwd = get_password_hash("856729ngoc199819981998") # Mật khẩu mặc định: admin123
-            new_admin = UserDB(
-                username="856729ngoc199819981998", 
-                email="khanhngoc981856729@gmail.com", 
-                hashed_password=hashed_pwd
-            )
-            db.add(new_admin)
-            db.commit()
-            print("==================================================")
-            print("✅ Đã tạo tài khoản Admin mặc định!")
-            print("👉 Username : admin")
-            print("👉 Password : admin123")
-            print("==================================================")
-    finally:
-        db.close()
-
-# Gọi hàm ngay khi file main.py được chạy
-init_default_admin()
-# ==========================================
-# 3. PYDANTIC SCHEMAS (Validation Dữ Liệu)
+# 3. PYDANTIC SCHEMAS
 # ==========================================
 class Token(BaseModel):
     access_token: str
@@ -117,8 +70,6 @@ class UserResponse(BaseModel):
     id: int
     username: str
     email: str
-    class Config:
-        from_attributes = True
 
 class LicenseCreate(BaseModel):
     user_id: int
@@ -129,34 +80,29 @@ class LicenseResponse(BaseModel):
     license_key: str
     expires_at: datetime
     is_active: bool
-    fingerprint: Optional[dict] = None  # Phản hồi chứa cả fingerprint
+    fingerprint: Optional[dict] = None
     user_id: int
-    class Config:
-        from_attributes = True
 
-# REQUEST MỚI CHO VERIFY
 class VerifyRequest(BaseModel):
     license_key: str
-    fingerprint: dict  # Yêu cầu client phải gửi thông tin phần cứng (Dạng JSON/Dict)
+    fingerprint: dict 
 
 class VerifyResponse(BaseModel):
     is_valid: bool
     message: str
     days_remaining: int
-    expires_at: datetime | None
+    expires_at: Optional[datetime] = None
 
 # ==========================================
-# 4. DEPENDENCIES
+# 4. DEPENDENCIES & APP
 # ==========================================
-def get_db():
-    db = SessionLocal()
-    db.execute(text("PRAGMA foreign_keys=ON;")) if engine.name == "sqlite" else None
-    try:
-        yield db
-    finally:
-        db.close()
+app = FastAPI(
+    title="License Management API (Serverless)",
+    description="Hệ thống quản lý License Key trên Cloudflare Workers",
+    version="1.2.0"
+)
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+def get_current_user(token: str = Depends(oauth2_scheme)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Không thể xác thực danh tính",
@@ -165,74 +111,67 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
-        if username is None:
+        if username is None or username not in fake_users_db:
             raise credentials_exception
     except jwt.InvalidTokenError:
         raise credentials_exception
         
-    user = db.query(UserDB).filter(UserDB.username == username).first()
-    if user is None:
-        raise credentials_exception
-    return user
+    return fake_users_db[username]
 
-app = FastAPI(
-    title="License Management API",
-    description="Hệ thống quản lý License Key tích hợp Hardware Binding (JSON Fingerprint)",
-    version="1.2.0"
-)
-
+# ==========================================
+# 5. PUBLIC ROUTES
+# ==========================================
 @app.post("/register", response_model=UserResponse, tags=["Public - Auth"])
-def register_user(user: UserCreate, db: Session = Depends(get_db)):
-    if db.query(UserDB).filter(UserDB.username == user.username).first():
+def register_user(user: UserCreate):
+    global user_id_counter
+    if user.username in fake_users_db:
         raise HTTPException(status_code=400, detail="Username đã tồn tại")
-    if db.query(UserDB).filter(UserDB.email == user.email).first():
-        raise HTTPException(status_code=400, detail="Email đã tồn tại")
-        
-    hashed_pwd = get_password_hash(user.password)
-    new_user = UserDB(username=user.username, email=user.email, hashed_password=hashed_pwd)
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
+    
+    for u in fake_users_db.values():
+        if u["email"] == user.email:
+            raise HTTPException(status_code=400, detail="Email đã tồn tại")
+            
+    new_user = {
+        "id": user_id_counter,
+        "username": user.username,
+        "email": user.email,
+        "hashed_password": get_password_hash(user.password)
+    }
+    fake_users_db[user.username] = new_user
+    user_id_counter += 1
     return new_user
 
 @app.post("/login", response_model=Token, tags=["Public - Auth"])
-def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    user = db.query(UserDB).filter(UserDB.username == form_data.username).first()
-    if not user or not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sai tên đăng nhập hoặc mật khẩu")
+def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = fake_users_db.get(form_data.username)
+    if not user or not verify_password(form_data.password, user["hashed_password"]):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sai thông tin đăng nhập")
     
-    access_token = create_access_token(data={"sub": user.username}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    access_token = create_access_token(data={"sub": user["username"]}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     return {"access_token": access_token, "token_type": "bearer"}
 
 @app.post("/verify/", response_model=VerifyResponse, tags=["Public - Verify Key"])
-def verify_license(request: VerifyRequest, db: Session = Depends(get_db)):
-    license_db = db.query(LicenseDB).filter(LicenseDB.license_key == request.license_key).first()
-    
-    if not license_db:
+def verify_license(request: VerifyRequest):
+    license_data = None
+    for lic in fake_licenses_db.values():
+        if lic["license_key"] == request.license_key:
+            license_data = lic
+            break
+            
+    if not license_data:
         raise HTTPException(status_code=404, detail="License key không tồn tại.")
         
-    if not license_db.is_active:
-        return VerifyResponse(is_valid=False, message="License key đã bị khóa.", days_remaining=0, expires_at=license_db.expires_at)
+    if not license_data["is_active"]:
+        return VerifyResponse(is_valid=False, message="License key đã bị khóa.", days_remaining=0, expires_at=license_data["expires_at"])
     
-    # --- LOGIC KIỂM TRA FINGERPRINT MÁY ---
-    if license_db.fingerprint is None:
-        # Nếu chưa có thiết bị nào gắn với key này -> Lấy thiết bị hiện tại làm máy gốc (Bind Hardware)
-        license_db.fingerprint = request.fingerprint
-        db.commit()
-        db.refresh(license_db)
+    if license_data["fingerprint"] is None:
+        license_data["fingerprint"] = request.fingerprint
     else:
-        # Nếu key đã được kích hoạt -> Kiểm tra xem fingerprint gửi lên có khớp với máy gốc không
-        if license_db.fingerprint != request.fingerprint:
-            return VerifyResponse(
-                is_valid=False, 
-                message="Mã bản quyền này đang được sử dụng ở một thiết bị khác. Vui lòng liên hệ Admin.", 
-                days_remaining=0, 
-                expires_at=license_db.expires_at
-            )
-    # ----------------------------------------
+        if license_data["fingerprint"] != request.fingerprint:
+            return VerifyResponse(is_valid=False, message="Mã bản quyền đang được dùng ở thiết bị khác.", days_remaining=0, expires_at=license_data["expires_at"])
     
     now_utc = datetime.now(timezone.utc)
-    expires_at = license_db.expires_at.replace(tzinfo=timezone.utc) if license_db.expires_at.tzinfo is None else license_db.expires_at
+    expires_at = license_data["expires_at"]
     days_remaining = (expires_at - now_utc).days
 
     if now_utc > expires_at:
@@ -242,88 +181,111 @@ def verify_license(request: VerifyRequest, db: Session = Depends(get_db)):
 
 
 # ==========================================
-# 7. PRIVATE ROUTES - USER MANAGEMENT
+# 6. PRIVATE ROUTES - USER MANAGEMENT
 # ==========================================
-
 @app.get("/users/me", response_model=UserResponse, tags=["Private - Users"])
-def read_users_me(current_user: UserDB = Depends(get_current_user)):
+def read_users_me(current_user: dict = Depends(get_current_user)):
     return current_user
 
 @app.get("/users/", response_model=list[UserResponse], tags=["Private - Users"])
-def get_all_users(db: Session = Depends(get_db), current_user: UserDB = Depends(get_current_user)):
-    return db.query(UserDB).all()
+def get_all_users(current_user: dict = Depends(get_current_user)):
+    return list(fake_users_db.values())
 
 @app.get("/users/{user_id}", response_model=UserResponse, tags=["Private - Users"])
-def get_user_by_id(user_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(get_current_user)):
-    user = db.query(UserDB).filter(UserDB.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User không tồn tại")
-    return user
+def get_user_by_id(user_id: int, current_user: dict = Depends(get_current_user)):
+    for u in fake_users_db.values():
+        if u["id"] == user_id:
+            return u
+    raise HTTPException(status_code=404, detail="User không tồn tại")
 
 @app.put("/users/{user_id}", response_model=UserResponse, tags=["Private - Users"])
-def update_user(user_id: int, user_update: UserUpdate, db: Session = Depends(get_db), current_user: UserDB = Depends(get_current_user)):
-    user = db.query(UserDB).filter(UserDB.id == user_id).first()
-    if not user:
+def update_user(user_id: int, user_update: UserUpdate, current_user: dict = Depends(get_current_user)):
+    target_username = None
+    for username, u in fake_users_db.items():
+        if u["id"] == user_id:
+            target_username = username
+            break
+            
+    if not target_username:
         raise HTTPException(status_code=404, detail="User không tồn tại")
-    if user_update.email:
-        existing = db.query(UserDB).filter(UserDB.email == user_update.email, UserDB.id != user_id).first()
-        if existing:
-            raise HTTPException(status_code=400, detail="Email này đã được sử dụng")
-        user.email = user_update.email
-    if user_update.password:
-        user.hashed_password = get_password_hash(user_update.password)
         
-    db.commit()
-    db.refresh(user)
+    user = fake_users_db[target_username]
+    
+    if user_update.email:
+        # Check email trùng
+        for u in fake_users_db.values():
+            if u["email"] == user_update.email and u["id"] != user_id:
+                raise HTTPException(status_code=400, detail="Email này đã được sử dụng")
+        user["email"] = user_update.email
+        
+    if user_update.password:
+        user["hashed_password"] = get_password_hash(user_update.password)
+        
     return user
 
 @app.delete("/users/{user_id}", tags=["Private - Users"])
-def delete_user(user_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(get_current_user)):
-    user = db.query(UserDB).filter(UserDB.id == user_id).first()
-    if not user:
+def delete_user(user_id: int, current_user: dict = Depends(get_current_user)):
+    target_username = None
+    for username, u in fake_users_db.items():
+        if u["id"] == user_id:
+            target_username = username
+            break
+            
+    if not target_username:
         raise HTTPException(status_code=404, detail="User không tồn tại")
-    db.delete(user)
-    db.commit()
-    return {"status": "success", "message": "Đã xóa User và toàn bộ License."}
+        
+    del fake_users_db[target_username]
+    
+    # Xóa cả license thuộc về user này
+    keys_to_delete = [k for k, v in fake_licenses_db.items() if v["user_id"] == user_id]
+    for k in keys_to_delete:
+        del fake_licenses_db[k]
+        
+    return {"status": "success", "message": "Đã xóa User và toàn bộ License liên quan."}
 
 # ==========================================
-# 8. PRIVATE ROUTES - LICENSE MANAGEMENT
+# 7. PRIVATE ROUTES - LICESES MANAGEMENT
 # ==========================================
-
 @app.post("/licenses/", response_model=LicenseResponse, tags=["Private - Licenses"])
-def create_license(lic: LicenseCreate, db: Session = Depends(get_db), current_user: UserDB = Depends(get_current_user)):
-    user = db.query(UserDB).filter(UserDB.id == lic.user_id).first()
-    if not user:
+def create_license(lic: LicenseCreate, current_user: dict = Depends(get_current_user)):
+    global license_id_counter
+    
+    user_exists = any(u["id"] == lic.user_id for u in fake_users_db.values())
+    if not user_exists:
         raise HTTPException(status_code=404, detail="User không tồn tại.")
 
     new_key = f"KEY-{uuid.uuid4().hex[:12].upper()}"
     expiration_date = datetime.now(timezone.utc) + timedelta(days=lic.duration_days)
 
-    new_license = LicenseDB(license_key=new_key, expires_at=expiration_date, user_id=lic.user_id)
-    db.add(new_license)
-    db.commit()
-    db.refresh(new_license)
+    new_license = {
+        "id": license_id_counter,
+        "license_key": new_key,
+        "expires_at": expiration_date,
+        "is_active": True,
+        "fingerprint": None,
+        "user_id": lic.user_id
+    }
+    fake_licenses_db[license_id_counter] = new_license
+    license_id_counter += 1
     return new_license
 
 @app.get("/licenses/", response_model=list[LicenseResponse], tags=["Private - Licenses"])
-def get_all_licenses(db: Session = Depends(get_db), current_user: UserDB = Depends(get_current_user)):
-    return db.query(LicenseDB).all()
+def get_all_licenses(current_user: dict = Depends(get_current_user)):
+    return list(fake_licenses_db.values())
 
 @app.post("/licenses/{license_id}/reset-fingerprint", tags=["Private - Licenses"])
-def reset_fingerprint(license_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(get_current_user)):
-    """API giúp Admin xóa thông tin máy bị khóa, cho phép User dùng key trên máy mới."""
-    license_db = db.query(LicenseDB).filter(LicenseDB.id == license_id).first()
-    if not license_db:
+def reset_fingerprint(license_id: int, current_user: dict = Depends(get_current_user)):
+    if license_id not in fake_licenses_db:
         raise HTTPException(status_code=404, detail="License không tồn tại")
         
-    license_db.fingerprint = None
-    db.commit()
-    db.refresh(license_db)
-    return {"status": "success", "message": f"Đã gỡ khóa thiết bị cho mã {license_db.license_key}."}
+    fake_licenses_db[license_id]["fingerprint"] = None
+    key = fake_licenses_db[license_id]["license_key"]
+    return {"status": "success", "message": f"Đã gỡ khóa thiết bị cho mã {key}."}
 
-
+# ==========================================
+# CLOUDFLARE ENTRYPOINT
+# ==========================================
 class Default(WorkerEntrypoint):
     async def fetch(self, request):
         import asgi
-
         return await asgi.fetch(app, request.js_object, self.env)
