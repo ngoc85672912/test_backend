@@ -1,3 +1,30 @@
+import subprocess
+import sys
+
+# Danh sách các thư viện cần cài đặt
+packages =[
+    "webtypy>=0.1.7",
+    "fastapi",
+    "markupsafe",
+    "jinja2",
+    "sqlalchemy",
+    "pydantic",
+    "libpass",
+    "jwt",
+    # "typing",  # Lưu ý: 'typing' đã có sẵn trong Python 3.5+ nên thường không cần cài.
+]
+
+def install(package):
+    """Hàm chạy lệnh pip install cho từng package"""
+    try:
+        # sys.executable đảm bảo pip được chạy cùng môi trường với phiên bản Python hiện tại
+        subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+        print(f"✅ Đã cài đặt thành công: {package}")
+    except subprocess.CalledProcessError:
+        print(f"❌ Lỗi khi cài đặt: {package}")
+for pkg in packages:
+        install(pkg)
+print("Hoàn tất quá trình cài đặt!")
 from fastapi import FastAPI, Request
 from workers import WorkerEntrypoint
 import uuid
