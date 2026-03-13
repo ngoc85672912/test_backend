@@ -7,9 +7,6 @@
 		"python_workers",
 		"python_dedicated_snapshot"
 	],
-	"vars": {
-		"MESSAGE": "My env var"
-	},
 	"observability": {
 		"enabled": true
 	}
