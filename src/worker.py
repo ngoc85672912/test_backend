@@ -73,12 +73,6 @@ async def say_hi(name: str, license_info: dict = Depends(verify_license_key)):
         "user_id": license_info.get("user_id") # Giả định có cột user_id
     }
 
-@app.get("/env")
-async def env(req: Request):
-    env = req.scope["env"]
-    has_supabase = "Yes" if hasattr(env, "SUPABASE_URL") else "No"
-    return {"supabase_configured": has_supabase, "message": getattr(env, "MESSAGE", "No Message")}
-
 class Default(WorkerEntrypoint):
     async def fetch(self, request):
         import asgi
