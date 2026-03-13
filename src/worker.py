@@ -42,7 +42,7 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None):
 # ==========================================
 # 2. CẤU HÌNH DATABASE & MODELS
 # ==========================================
-SQLALCHEMY_DATABASE_URL = "sqlite:///./license_system.db"
+SQLALCHEMY_DATABASE_URL = "sqlite:////tmp/license_system.db"
 engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
