@@ -1,4 +1,4 @@
-print("Khởi tạo API License Serverless (Full Routes)!")
+print("Khởi tạo API License Serverless (Full Routes, Fix Entropy)!")
 from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from passlib.context import CryptContext
@@ -16,14 +16,19 @@ SECRET_KEY = "856729ngoc199819981998"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
-# DÙNG pbkdf2_sha256 để không bị lỗi trên Cloudflare
-pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
+# SỬA LỖI 1: Không khởi tạo CryptContext ở đây.
+# pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
+
 def get_password_hash(password):
+    # Khởi tạo CryptContext bên trong hàm để không bị lỗi Entropy
+    pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
     return pwd_context.hash(password)
 
 def verify_password(plain_password, hashed_password):
+    # Khởi tạo CryptContext bên trong hàm
+    pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
     return pwd_context.verify(plain_password, hashed_password)
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None):
@@ -37,13 +42,14 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None):
 
 # ==========================================
 # 2. IN-MEMORY DATABASE (RAM TẠM THỜI ĐỂ TEST)
+# SỬA LỖI 2: Phải gọi get_password_hash sau khi đã định nghĩa nó.
 # ==========================================
 fake_users_db = {
     "admin": {
         "id": 1,
         "username": "admin",
         "email": "khanhngoc981856729@gmail.com",
-        "hashed_password": get_password_hash("khanhngoc981856729@gmail.com19981998")
+        "hashed_password": get_password_hash("admin123")
     }
 }
 fake_licenses_db = {}
@@ -51,12 +57,12 @@ user_id_counter = 2
 license_id_counter = 1
 
 # ==========================================
-# 3. PYDANTIC SCHEMAS
+# 3. PYDANTIC SCHEMAS (Không thay đổi)
 # ==========================================
 class Token(BaseModel):
     access_token: str
     token_type: str
-
+# ... (Toàn bộ các class Pydantic còn lại giữ nguyên) ...
 class UserCreate(BaseModel):
     username: str
     email: str
@@ -94,12 +100,12 @@ class VerifyResponse(BaseModel):
     expires_at: Optional[datetime] = None
 
 # ==========================================
-# 4. DEPENDENCIES & APP
+# 4. DEPENDENCIES & APP (Không thay đổi)
 # ==========================================
 app = FastAPI(
     title="License Management API (Serverless)",
     description="Hệ thống quản lý License Key trên Cloudflare Workers",
-    version="1.2.0"
+    version="1.2.1" # Nâng version
 )
 
 def get_current_user(token: str = Depends(oauth2_scheme)):
@@ -117,9 +123,8 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
         raise credentials_exception
         
     return fake_users_db[username]
-
 # ==========================================
-# 5. PUBLIC ROUTES
+# 5. PUBLIC ROUTES (Sửa lại 1 chỗ login)
 # ==========================================
 @app.post("/register", response_model=UserResponse, tags=["Public - Auth"])
 def register_user(user: UserCreate):
@@ -144,6 +149,7 @@ def register_user(user: UserCreate):
 @app.post("/login", response_model=Token, tags=["Public - Auth"])
 def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
     user = fake_users_db.get(form_data.username)
+    # SỬA LỖI 3: Gọi hàm verify_password()
     if not user or not verify_password(form_data.password, user["hashed_password"]):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sai thông tin đăng nhập")
     
@@ -181,7 +187,7 @@ def verify_license(request: VerifyRequest):
 
 
 # ==========================================
-# 6. PRIVATE ROUTES - USER MANAGEMENT
+# 6. PRIVATE ROUTES - USER MANAGEMENT (Không đổi)
 # ==========================================
 @app.get("/users/me", response_model=UserResponse, tags=["Private - Users"])
 def read_users_me(current_user: dict = Depends(get_current_user)):
@@ -236,7 +242,6 @@ def delete_user(user_id: int, current_user: dict = Depends(get_current_user)):
         
     del fake_users_db[target_username]
     
-    # Xóa cả license thuộc về user này
     keys_to_delete = [k for k, v in fake_licenses_db.items() if v["user_id"] == user_id]
     for k in keys_to_delete:
         del fake_licenses_db[k]
@@ -244,7 +249,7 @@ def delete_user(user_id: int, current_user: dict = Depends(get_current_user)):
     return {"status": "success", "message": "Đã xóa User và toàn bộ License liên quan."}
 
 # ==========================================
-# 7. PRIVATE ROUTES - LICESES MANAGEMENT
+# 7. PRIVATE ROUTES - LICESES MANAGEMENT (Không đổi)
 # ==========================================
 @app.post("/licenses/", response_model=LicenseResponse, tags=["Private - Licenses"])
 def create_license(lic: LicenseCreate, current_user: dict = Depends(get_current_user)):
